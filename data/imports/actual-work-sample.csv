@@ -1,0 +1,4 @@
+date,employee_email,queue_name,interval_start,interval_end,status,actual_minutes
+2026-01-15,operator1@telesales.local,Исходящая линия,10:00,10:30,worked,30
+2026-01-15,operator2@telesales.local,Исходящая линия,10:00,10:30,late,20
+2026-01-15,operator3@telesales.local,Чат-поддержка,10:30,11:00,worked,30

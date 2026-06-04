@@ -1,0 +1,5 @@
+date,interval_start,interval_end,queue_name,offered_contacts,handled_contacts,abandoned_contacts,average_handle_time_sec,service_level_percent
+2026-01-15,09:00,09:30,Входящая линия,120,110,10,240,82.5
+2026-01-15,09:30,10:00,Входящая линия,140,130,10,260,80.1
+2026-01-15,10:00,10:30,Исходящая линия,90,84,6,280,78.4
+2026-01-15,10:30,11:00,Чат-поддержка,160,151,9,210,86.2

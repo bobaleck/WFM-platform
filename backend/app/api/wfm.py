@@ -15,6 +15,7 @@ from app.integrations.naumen.service import client_from_settings, missing_settin
 from app.integrations.onec.service import OneCService, get_or_create_onec_settings
 from app.models.integration_settings import AppSetting, NaumenProject, UserPreference, UserProjectAccess
 from app.services.integration_settings import get_or_create_naumen_settings
+from app.services.naumen_ncc_service import NaumenNccService, default_period as ncc_default_period
 from app.models.wfm import (
     Absence,
     ActualWorkInterval,
@@ -158,9 +159,16 @@ def validate_inn_or_400(inn: str | None) -> str | None:
     if inn is None or inn == "":
         return None
     cleaned = "".join(ch for ch in inn if ch.isdigit())
-    if len(cleaned) != 12:
-        raise HTTPException(status_code=422, detail="ИНН физлица должен содержать 12 цифр")
+    if len(cleaned) not in {10, 12}:
+        raise HTTPException(status_code=422, detail="ИНН должен содержать 10 или 12 цифр")
     return cleaned
+
+
+def normalize_inn(inn: str | None) -> str | None:
+    if not inn:
+        return None
+    cleaned = "".join(ch for ch in str(inn).strip() if ch.isdigit())
+    return cleaned or None
 
 
 def normalize_phone(value: str | None) -> str | None:
@@ -893,6 +901,7 @@ async def import_employees_xlsx(request: Request, file: UploadFile = File(...), 
         if len(rows) - 1 > 10000:
             raise ValueError("Максимальный размер реестра: 10 000 строк")
         index = {name: idx for idx, name in enumerate(headers)}
+        seen_inns: set[str] = set()
         for row_number, row in enumerate(rows[1:], start=2):
             values = {name: (row[idx] if idx < len(row) else None) for name, idx in index.items()}
             if not any(values.values()):
@@ -905,6 +914,9 @@ async def import_employees_xlsx(request: Request, file: UploadFile = File(...), 
                 inn = validate_inn_or_400(str(values.get("ИНН") or "").strip())
                 if not inn:
                     raise ValueError("ИНН обязателен")
+                if inn in seen_inns:
+                    raise ValueError("Дублирующийся ИНН внутри файла")
+                seen_inns.add(inn)
                 project_ids = [current_pid] if current_pid else []
                 contour_value = str(values.get("Проекты/контуры") or values.get("Рабочий контур") or "").strip()
                 if contour_value:
@@ -1131,7 +1143,12 @@ def check_all_employees_1c_status(payload: EmployeeCheckAllIn, request: Request,
     running = db.query(OneCStatusCheckRun).filter(OneCStatusCheckRun.status == "running").first()
     if running:
         raise HTTPException(status_code=409, detail="Массовая сверка с 1С уже выполняется")
-    query = db.query(Employee).filter(Employee.inn.isnot(None))
+    project_id = current_project_id(db, request, None)
+    query = db.query(Employee).join(EmployeeProjectAccess, EmployeeProjectAccess.employee_id == Employee.id).filter(
+        EmployeeProjectAccess.project_id == project_id,
+        EmployeeProjectAccess.can_work.is_(True),
+        Employee.inn.isnot(None),
+    )
     if payload.only_active:
         query = query.filter(Employee.is_active.is_(True))
     employees = query.order_by(Employee.id).all()
@@ -1143,9 +1160,13 @@ def check_all_employees_1c_status(payload: EmployeeCheckAllIn, request: Request,
     service = OneCService(settings)
     try:
         for employee in employees:
-            if not employee.inn:
+            inn = normalize_inn(employee.inn)
+            if not inn or len(inn) not in {10, 12}:
+                run.employees_failed += 1
+                db.add(OneCStatusCheckError(run_id=run.id, employee_id=employee.id, inn=employee.inn, error_message="Некорректный ИНН: сверка не отправлялась в 1С Gateway"))
                 continue
-            result = service.check_employee_status_by_inn(employee.inn)
+            employee.inn = inn
+            result = service.check_employee_status_by_inn(inn)
             apply_onec_status(employee, result)
             run.employees_checked += 1
             if result.status == "working":
@@ -1234,8 +1255,13 @@ def check_employee_naumen(item_id: int, request: Request, db: Session = Depends(
     if not employee_has_project_access(db, employee.id, project_id):
         raise HTTPException(status_code=403, detail="Сотрудник не доступен в текущем контуре")
     project = db.get(NaumenProject, project_id) if project_id else None
-    if not project or not project.project_uuid:
-        update_employee_naumen_status(employee, "check_error", "Для рабочего контура не указан UUID проекта Naumen.")
+    if not project:
+        update_employee_naumen_status(employee, "check_error", "Рабочий контур не выбран.")
+        db.commit()
+        return {"status": employee.naumen_status, "message": employee.naumen_last_check_message}
+    partner_uuid = project.naumen_customer_uuid or project.partner_uuid
+    if not partner_uuid:
+        update_employee_naumen_status(employee, "check_error", "Для рабочего контура не указан UUID Naumen/NCC.")
         db.commit()
         return {"status": employee.naumen_status, "message": employee.naumen_last_check_message}
     last_name, first_name, middle_name = split_person_name(employee.full_name)
@@ -1245,9 +1271,16 @@ def check_employee_naumen(item_id: int, request: Request, db: Session = Depends(
         return {"status": employee.naumen_status, "message": employee.naumen_last_check_message}
     operators = db.query(NaumenOperator).filter(NaumenOperator.project_id == project_id).all()
     if not operators:
-        update_employee_naumen_status(employee, "api_unavailable", "Операторы проекта Naumen не загружены. Загрузите операторов проекта в интеграции Naumen.")
-        db.commit()
-        return {"status": employee.naumen_status, "message": employee.naumen_last_check_message}
+        begin, end = ncc_default_period()
+        try:
+            rows = NaumenNccService(db).employees(partner_uuid, begin, end)
+            NaumenNccService(db)._save_operators(project, rows)
+            db.commit()
+            operators = db.query(NaumenOperator).filter(NaumenOperator.project_id == project_id).all()
+        except Exception:
+            update_employee_naumen_status(employee, "api_unavailable", "Naumen/NCC недоступен или не настроен. Сверка по ФИО не выполнена.")
+            db.commit()
+            return {"status": employee.naumen_status, "message": employee.naumen_last_check_message}
     candidates = [
         op for op in operators
         if op.normalized_last_name == last_name
@@ -1335,12 +1368,26 @@ def match_naumen_operators(request: Request, project_id: int | None = None, db: 
 @router.post("/employees/naumen/check-all")
 def check_all_naumen(request: Request, project_id: int | None = None, db: Session = Depends(get_db)) -> dict:
     project_id = current_project_id(db, request, project_id)
+    project = db.get(NaumenProject, project_id) if project_id else None
+    partner_uuid = (project.naumen_customer_uuid or project.partner_uuid) if project else None
+    if not project or not partner_uuid:
+        raise HTTPException(status_code=422, detail="Для активного контура не указан UUID Naumen/NCC")
     employees = db.query(Employee).join(EmployeeProjectAccess, EmployeeProjectAccess.employee_id == Employee.id).filter(
         EmployeeProjectAccess.project_id == project_id,
         EmployeeProjectAccess.can_work.is_(True),
         Employee.is_active.is_(True),
     ).all()
     operators = db.query(NaumenOperator).filter(NaumenOperator.project_id == project_id).all()
+    period_begin = period_end = None
+    if not operators:
+        period_begin, period_end = ncc_default_period()
+        try:
+            rows = NaumenNccService(db).employees(partner_uuid, period_begin, period_end)
+            NaumenNccService(db)._save_operators(project, rows)
+            db.commit()
+            operators = db.query(NaumenOperator).filter(NaumenOperator.project_id == project_id).all()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Naumen/NCC недоступен или не настроен. Массовая сверка не выполнена.") from exc
     checked = linked = failed = mismatch = 0
     for employee in employees:
         checked += 1
@@ -1371,7 +1418,16 @@ def check_all_naumen(request: Request, project_id: int | None = None, db: Sessio
             update_employee_naumen_status(employee, "not_found", "Сотрудник не найден в операторах проекта Naumen.")
             failed += 1
     db.commit()
-    return {"status": "ok", "checked": checked, "linked": linked, "mismatch": mismatch, "failed": failed}
+    return {
+        "status": "ok",
+        "checked": checked,
+        "linked": linked,
+        "mismatch": mismatch,
+        "failed": failed,
+        "period_begin": period_begin,
+        "period_end": period_end,
+        "message": "Сверка Naumen выполнена по операторам NCC активного контура.",
+    }
 
 
 @router.get("/employees/{item_id}/stats")
@@ -2517,17 +2573,32 @@ def build_plan_fact(db: Session, date_from: date, date_to: date, queue_id: int |
     )
 
 
-def executive_summary_data(db: Session) -> dict:
+def executive_summary_data(db: Session, project_id: int | None = None) -> dict:
     plan_fact = build_plan_fact(db, date.today() - timedelta(days=7), date.today() + timedelta(days=7))
-    avg_coverage = db.query(func.avg(ScheduleCoverage.coverage_percent)).scalar() or 0
-    avg_sl = db.query(func.avg(WorkloadInterval.service_level_percent)).scalar() or db.query(func.avg(KpiSnapshot.service_level_percent)).scalar() or 0
-    avg_aht = db.query(func.avg(WorkloadInterval.average_handle_time_sec)).scalar() or db.query(func.avg(KpiSnapshot.average_handle_time_sec)).scalar() or 0
+    coverage_query = db.query(func.avg(ScheduleCoverage.coverage_percent))
+    workload_query = db.query(func.avg(WorkloadInterval.service_level_percent))
+    aht_query = db.query(func.avg(WorkloadInterval.average_handle_time_sec))
+    employee_query = db.query(Employee).join(EmployeeProjectAccess, EmployeeProjectAccess.employee_id == Employee.id).filter(Employee.is_active.is_(True))
+    queue_query = db.query(Queue).filter(Queue.is_active.is_(True))
+    schedule_query = db.query(ScheduleAssignment).filter(ScheduleAssignment.status == "published")
+    gap_query = db.query(ScheduleCoverage).filter(ScheduleCoverage.gap_agents > 0)
+    if project_id is not None:
+        coverage_query = coverage_query.filter(ScheduleCoverage.project_id == project_id)
+        workload_query = workload_query.filter(WorkloadInterval.project_id == project_id)
+        aht_query = aht_query.filter(WorkloadInterval.project_id == project_id)
+        employee_query = employee_query.filter(EmployeeProjectAccess.project_id == project_id, EmployeeProjectAccess.can_work.is_(True))
+        queue_query = queue_query.filter(Queue.project_id == project_id)
+        schedule_query = schedule_query.filter(ScheduleAssignment.project_id == project_id)
+        gap_query = gap_query.filter(ScheduleCoverage.project_id == project_id)
+    avg_coverage = coverage_query.scalar() or 0
+    avg_sl = workload_query.scalar() or 0
+    avg_aht = aht_query.scalar() or 0
     return {
-        "active_employees": db.query(Employee).filter(Employee.is_active.is_(True)).count(),
-        "active_queues": db.query(Queue).filter(Queue.is_active.is_(True)).count(),
-        "published_assignments": db.query(ScheduleAssignment).filter(ScheduleAssignment.status == "published").count(),
+        "active_employees": employee_query.count(),
+        "active_queues": queue_query.count(),
+        "published_assignments": schedule_query.count(),
         "avg_coverage_percent": round(float(avg_coverage), 1),
-        "gap_intervals_count": db.query(ScheduleCoverage).filter(ScheduleCoverage.gap_agents > 0).count(),
+        "gap_intervals_count": gap_query.count(),
         "avg_service_level_percent": round(float(avg_sl), 1),
         "avg_aht_sec": round(float(avg_aht), 1),
         "planned_hours": plan_fact.planned_hours,
@@ -2536,9 +2607,9 @@ def executive_summary_data(db: Session) -> dict:
     }
 
 
-def operations_summary_data(db: Session) -> list[dict]:
+def operations_summary_data(db: Session, project_id: int | None = None) -> list[dict]:
     rows = []
-    grouped = db.query(
+    grouped_query = db.query(
         func.date(WorkloadInterval.interval_start).label("work_date"),
         WorkloadInterval.queue_id,
         func.sum(WorkloadInterval.offered_contacts).label("offered"),
@@ -2546,7 +2617,10 @@ def operations_summary_data(db: Session) -> list[dict]:
         func.sum(WorkloadInterval.abandoned_contacts).label("abandoned"),
         func.avg(WorkloadInterval.average_handle_time_sec).label("aht"),
         func.avg(WorkloadInterval.service_level_percent).label("sl"),
-    ).group_by(func.date(WorkloadInterval.interval_start), WorkloadInterval.queue_id).order_by(func.date(WorkloadInterval.interval_start), WorkloadInterval.queue_id).all()
+    )
+    if project_id is not None:
+        grouped_query = grouped_query.filter(WorkloadInterval.project_id == project_id)
+    grouped = grouped_query.group_by(func.date(WorkloadInterval.interval_start), WorkloadInterval.queue_id).order_by(func.date(WorkloadInterval.interval_start), WorkloadInterval.queue_id).all()
     for row in grouped:
         req = db.query(
             func.sum(StaffingRequirement.required_agents),
@@ -2572,9 +2646,12 @@ def operations_summary_data(db: Session) -> list[dict]:
     return rows
 
 
-def staffing_efficiency_data(db: Session) -> dict:
+def staffing_efficiency_data(db: Session, project_id: int | None = None) -> dict:
     plan_fact = build_plan_fact(db, date.today() - timedelta(days=7), date.today() + timedelta(days=7))
-    utilization = db.query(func.avg(KpiSnapshot.utilization_percent)).scalar() or 0
+    utilization_query = db.query(func.avg(KpiSnapshot.utilization_percent))
+    if project_id is not None:
+        utilization_query = utilization_query.filter(KpiSnapshot.project_id == project_id)
+    utilization = utilization_query.scalar() or 0
     return {
         "planned_hours": plan_fact.planned_hours,
         "actual_hours": plan_fact.actual_hours,
@@ -2585,7 +2662,10 @@ def staffing_efficiency_data(db: Session) -> dict:
     }
 
 
-def coverage_gaps_data(db: Session) -> list[dict]:
+def coverage_gaps_data(db: Session, project_id: int | None = None) -> list[dict]:
+    query = db.query(ScheduleCoverage).filter(ScheduleCoverage.gap_agents > 0)
+    if project_id is not None:
+        query = query.filter(ScheduleCoverage.project_id == project_id)
     return [
         {
             "interval_start": row.interval_start.isoformat(),
@@ -2597,14 +2677,20 @@ def coverage_gaps_data(db: Session) -> list[dict]:
             "gap_agents": row.gap_agents,
             "severity": severity_for_gap(row.gap_agents),
         }
-        for row in db.query(ScheduleCoverage).filter(ScheduleCoverage.gap_agents > 0).order_by(ScheduleCoverage.interval_start).limit(500).all()
+        for row in query.order_by(ScheduleCoverage.interval_start).limit(500).all()
     ]
 
 
-def sla_summary_data(db: Session) -> list[dict]:
+def sla_summary_data(db: Session, project_id: int | None = None) -> list[dict]:
     rows = []
-    for queue in db.query(Queue).order_by(Queue.id).all():
-        intervals = db.query(WorkloadInterval).filter(WorkloadInterval.queue_id == queue.id).all()
+    queue_query = db.query(Queue)
+    if project_id is not None:
+        queue_query = queue_query.filter(Queue.project_id == project_id)
+    for queue in queue_query.order_by(Queue.id).all():
+        intervals_query = db.query(WorkloadInterval).filter(WorkloadInterval.queue_id == queue.id)
+        if project_id is not None:
+            intervals_query = intervals_query.filter(WorkloadInterval.project_id == project_id)
+        intervals = intervals_query.all()
         if not intervals:
             continue
         below = [item for item in intervals if item.service_level_percent < queue.service_level_target]
@@ -2621,59 +2707,59 @@ def sla_summary_data(db: Session) -> list[dict]:
 
 
 @router.get("/reports/executive-summary")
-def executive_summary(db: Session = Depends(get_db)):
-    return executive_summary_data(db)
+def executive_summary(request: Request, db: Session = Depends(get_db)):
+    return executive_summary_data(db, current_project_id(db, request, None))
 
 
 @router.get("/reports/operations-summary")
-def operations_summary(db: Session = Depends(get_db)):
-    return operations_summary_data(db)
+def operations_summary(request: Request, db: Session = Depends(get_db)):
+    return operations_summary_data(db, current_project_id(db, request, None))
 
 
 @router.get("/reports/staffing-efficiency")
-def staffing_efficiency(db: Session = Depends(get_db)):
-    return staffing_efficiency_data(db)
+def staffing_efficiency(request: Request, db: Session = Depends(get_db)):
+    return staffing_efficiency_data(db, current_project_id(db, request, None))
 
 
 @router.get("/reports/coverage-gaps")
-def coverage_gaps_report(db: Session = Depends(get_db)):
-    return coverage_gaps_data(db)
+def coverage_gaps_report(request: Request, db: Session = Depends(get_db)):
+    return coverage_gaps_data(db, current_project_id(db, request, None))
 
 
 @router.get("/reports/sla-summary")
-def sla_summary(db: Session = Depends(get_db)):
-    return sla_summary_data(db)
+def sla_summary(request: Request, db: Session = Depends(get_db)):
+    return sla_summary_data(db, current_project_id(db, request, None))
 
 
 @router.get("/reports/executive-summary.csv")
 def executive_summary_csv(request: Request, db: Session = Depends(get_db)):
-    data = executive_summary_data(db)
+    data = executive_summary_data(db, current_project_id(db, request, None))
     rows = [[key, value] for key, value in data.items()]
     return csv_response("executive-summary.csv", ["metric", "value"], rows, db, request, "executive_summary")
 
 
 @router.get("/reports/operations-summary.csv")
 def operations_summary_csv(request: Request, db: Session = Depends(get_db)):
-    rows = [[item[key] for key in ["work_date", "queue_name", "offered_contacts", "handled_contacts", "abandoned_contacts", "avg_aht_sec", "avg_service_level_percent", "required_agents", "planned_agents", "gap_agents"]] for item in operations_summary_data(db)]
+    rows = [[item[key] for key in ["work_date", "queue_name", "offered_contacts", "handled_contacts", "abandoned_contacts", "avg_aht_sec", "avg_service_level_percent", "required_agents", "planned_agents", "gap_agents"]] for item in operations_summary_data(db, current_project_id(db, request, None))]
     return csv_response("operations-summary.csv", ["date", "queue", "offered", "handled", "abandoned", "aht", "sl", "required", "planned", "gap"], rows, db, request, "operations_summary")
 
 
 @router.get("/reports/staffing-efficiency.csv")
 def staffing_efficiency_csv(request: Request, db: Session = Depends(get_db)):
-    data = staffing_efficiency_data(db)
+    data = staffing_efficiency_data(db, current_project_id(db, request, None))
     rows = [[key, value] for key, value in data.items()]
     return csv_response("staffing-efficiency.csv", ["metric", "value"], rows, db, request, "staffing_efficiency")
 
 
 @router.get("/reports/coverage-gaps.csv")
 def coverage_gaps_csv(request: Request, db: Session = Depends(get_db)):
-    rows = [[item[key] for key in ["interval_start", "interval_end", "queue_name", "required_agents", "planned_agents", "gap_agents", "severity"]] for item in coverage_gaps_data(db)]
+    rows = [[item[key] for key in ["interval_start", "interval_end", "queue_name", "required_agents", "planned_agents", "gap_agents", "severity"]] for item in coverage_gaps_data(db, current_project_id(db, request, None))]
     return csv_response("coverage-gaps.csv", ["interval_start", "interval_end", "queue", "required", "planned", "gap", "severity"], rows, db, request, "coverage_gaps")
 
 
 @router.get("/reports/sla-summary.csv")
 def sla_summary_csv(request: Request, db: Session = Depends(get_db)):
-    rows = [[item[key] for key in ["queue_name", "target_service_level_percent", "avg_service_level_percent", "min_service_level_percent", "below_target_intervals", "intervals_total"]] for item in sla_summary_data(db)]
+    rows = [[item[key] for key in ["queue_name", "target_service_level_percent", "avg_service_level_percent", "min_service_level_percent", "below_target_intervals", "intervals_total"]] for item in sla_summary_data(db, current_project_id(db, request, None))]
     return csv_response("sla-summary.csv", ["queue", "target_sl", "avg_sl", "min_sl", "below_target", "intervals_total"], rows, db, request, "sla_summary")
 
 
@@ -2726,12 +2812,19 @@ def plan_fact_csv(date_from: date, date_to: date, request: Request, queue_id: in
 
 
 @router.get("/reports/summary", response_model=SummaryOut)
-def summary(db: Session = Depends(get_db)):
+def summary(request: Request, db: Session = Depends(get_db)):
+    project_id = current_project_id(db, request, None)
     today = date.today()
     week_end = today + timedelta(days=7)
-    avg_sl = db.query(func.avg(WorkloadInterval.service_level_percent)).scalar() or 0
-    avg_aht = db.query(func.avg(WorkloadInterval.average_handle_time_sec)).scalar() or 0
-    gap = db.query(func.sum(StaffingRequirement.gap_agents)).scalar() or 0
+    workload_query = db.query(func.avg(WorkloadInterval.service_level_percent), func.avg(WorkloadInterval.average_handle_time_sec))
+    staffing_gap_query = db.query(func.sum(StaffingRequirement.gap_agents))
+    if project_id is not None:
+        workload_query = workload_query.filter(WorkloadInterval.project_id == project_id)
+        staffing_gap_query = staffing_gap_query.filter(StaffingRequirement.project_id == project_id)
+    avg_sl, avg_aht = workload_query.one()
+    avg_sl = avg_sl or 0
+    avg_aht = avg_aht or 0
+    gap = staffing_gap_query.scalar() or 0
     asa = 18
     staffing_by_queue = [
         {
@@ -2745,7 +2838,7 @@ def summary(db: Session = Depends(get_db)):
             func.sum(StaffingRequirement.required_agents).label("required_agents"),
             func.sum(StaffingRequirement.planned_agents).label("planned_agents"),
             func.sum(StaffingRequirement.gap_agents).label("gap_agents"),
-        ).group_by(StaffingRequirement.queue_id).order_by(StaffingRequirement.queue_id).all()
+        ).filter(StaffingRequirement.project_id == project_id if project_id is not None else True).group_by(StaffingRequirement.queue_id).order_by(StaffingRequirement.queue_id).all()
     ]
     planned_coverage = [
         {
@@ -2762,7 +2855,7 @@ def summary(db: Session = Depends(get_db)):
             "rows_success": row.rows_success,
             "rows_failed": row.rows_failed,
         }
-        for row in db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(5).all()
+        for row in db.query(ImportBatch).filter(ImportBatch.project_id == project_id if project_id is not None else True).order_by(ImportBatch.created_at.desc()).limit(5).all()
     ]
     today_schedules = [
         {
@@ -2771,7 +2864,7 @@ def summary(db: Session = Depends(get_db)):
             "queue_name": queue_name(db, row.queue_id),
             "status": row.status,
         }
-        for row in db.query(ScheduleAssignment).filter(ScheduleAssignment.work_date == today).order_by(ScheduleAssignment.id).limit(8).all()
+        for row in db.query(ScheduleAssignment).filter(ScheduleAssignment.work_date == today, ScheduleAssignment.project_id == project_id if project_id is not None else True).order_by(ScheduleAssignment.id).limit(8).all()
     ]
     coverage_gaps = [
         {
@@ -2780,7 +2873,7 @@ def summary(db: Session = Depends(get_db)):
             "gap_agents": row.gap_agents,
             "coverage_percent": row.coverage_percent,
         }
-        for row in db.query(ScheduleCoverage).filter(ScheduleCoverage.gap_agents > 0).order_by(ScheduleCoverage.interval_start).limit(8).all()
+        for row in db.query(ScheduleCoverage).filter(ScheduleCoverage.gap_agents > 0, ScheduleCoverage.project_id == project_id if project_id is not None else True).order_by(ScheduleCoverage.interval_start).limit(8).all()
     ]
     recent_generations = [
         {
@@ -2794,11 +2887,11 @@ def summary(db: Session = Depends(get_db)):
     ]
     week_plan_fact = build_plan_fact(db, today, week_end)
     return SummaryOut(
-        total_employees=db.query(Employee).count(),
-        active_teams=db.query(Team).filter(Team.is_active.is_(True)).count(),
-        queues=db.query(Queue).count(),
-        shifts=db.query(Shift).count(),
-        week_assignments=db.query(ScheduleAssignment).filter(ScheduleAssignment.work_date >= today, ScheduleAssignment.work_date <= week_end).count(),
+        total_employees=db.query(Employee).join(EmployeeProjectAccess, EmployeeProjectAccess.employee_id == Employee.id).filter(EmployeeProjectAccess.project_id == project_id, EmployeeProjectAccess.can_work.is_(True)).count() if project_id is not None else db.query(Employee).count(),
+        active_teams=db.query(Team).filter(Team.is_active.is_(True), Team.project_id == project_id if project_id is not None else True).count(),
+        queues=db.query(Queue).filter(Queue.project_id == project_id if project_id is not None else True).count(),
+        shifts=db.query(Shift).filter(Shift.project_id == project_id if project_id is not None else True).count(),
+        week_assignments=db.query(ScheduleAssignment).filter(ScheduleAssignment.work_date >= today, ScheduleAssignment.work_date <= week_end, ScheduleAssignment.project_id == project_id if project_id is not None else True).count(),
         average_service_level=round(float(avg_sl), 1),
         average_aht=round(float(avg_aht), 1),
         staffing_gap=int(gap),
@@ -2825,5 +2918,5 @@ def summary(db: Session = Depends(get_db)):
 
 
 @router.get("/reports/dashboard-summary", response_model=SummaryOut)
-def dashboard_summary(db: Session = Depends(get_db)):
-    return summary(db)
+def dashboard_summary(request: Request, db: Session = Depends(get_db)):
+    return summary(request, db)

@@ -1,3 +1,17 @@
-export function EmptyState({ text = "Данные пока не загружены. Загрузите данные через интеграцию или CSV-импорт." }: { text?: string }) {
-  return <div className="empty-state">{text}</div>;
+import type { ReactNode } from "react";
+
+type EmptyStateProps = {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+};
+
+export function EmptyState({ title, description, action }: EmptyStateProps) {
+  return (
+    <div className="empty-state">
+      <h3>{title}</h3>
+      {description ? <p>{description}</p> : null}
+      {action ? <div className="action-toolbar">{action}</div> : null}
+    </div>
+  );
 }

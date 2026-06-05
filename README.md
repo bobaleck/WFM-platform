@@ -65,6 +65,24 @@ WFM backend -> HTTP -> Windows 1C Gateway -> COMConnector -> база 1С
 
 Direct COM на Linux недоступен. Для production нужен отдельный Windows Gateway.
 
+## Интеграция Naumen/NCC
+
+Операторы, очереди, нагрузка и статистика Naumen/NCC читаются backend-ом из read-only PostgreSQL NCC. Frontend не подключается к NCC напрямую.
+
+В `.env` backend заполняются только реальные значения, в `.env.example` хранятся пустые шаблоны:
+
+```env
+NCC_DB_HOST=
+NCC_DB_NAME=
+NCC_DB_USER=
+NCC_DB_PASSWORD=
+NCC_DB_PORT=5432
+NCC_DB_TIMEOUT_SECONDS=15
+NCC_DB_MAX_PERIOD_DAYS=31
+```
+
+Если env или UUID Naumen/NCC у контура не заполнены, интерфейс показывает ручной режим: нагрузка загружается XLSX/CSV, fake-данные не создаются.
+
 ## Документация
 
 - `docs/manual-wfm-workflow.md`;

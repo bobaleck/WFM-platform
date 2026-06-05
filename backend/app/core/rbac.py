@@ -14,6 +14,7 @@ from app.models.wfm import User
 PUBLIC_PREFIXES = (
     "/health",
     "/api/v1/version",
+    "/api/v1/naumen/status",
     "/api/v1/auth/login",
 )
 
@@ -23,6 +24,8 @@ RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("/api/v1/auth/change-password", ("POST",), "dashboard:view"),
     ("/api/v1/reports/dashboard-summary", ("GET",), "dashboard:view"),
     ("/api/v1/reports/summary", ("GET",), "dashboard:view"),
+    ("/api/v1/reports/executive-summary", ("GET",), "dashboard:view"),
+    ("/api/v1/reports/operations-summary", ("GET",), "dashboard:view"),
     ("/api/v1/employees/import", ("GET", "POST"), "employees:import"),
     ("/api/v1/employees/naumen", ("POST",), "employees:sync_naumen|naumen:operators:sync"),
     ("/api/v1/employees/check-all-1c-status", ("POST",), "employees:sync_1c|onec:status-check-all"),
@@ -61,6 +64,9 @@ RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("/api/v1/integrations/naumen/diagnose", ("POST",), "naumen:settings:view"),
     ("/api/v1/integrations/naumen/partners", ("GET", "POST"), "naumen:operators:sync|naumen:settings:view"),
     ("/api/v1/integrations/naumen/sync", ("GET", "POST"), "naumen:operators:sync"),
+    ("/api/v1/naumen/status", ("GET",), "naumen:settings:view|dashboard:view"),
+    ("/api/v1/naumen/local", ("GET",), "dashboard:view|workload:view|queues:view|staffing:view|employees:view"),
+    ("/api/v1/naumen/customers", ("GET",), "naumen:settings:view|workload:view|dashboard:view"),
     ("/api/v1/naumen/operators", ("GET",), "employees:view|naumen:operators:sync"),
     ("/api/v1/naumen/operators/sync", ("POST",), "naumen:operators:sync"),
     ("/api/v1/projects/current", ("GET", "PUT"), "dashboard:view"),

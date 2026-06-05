@@ -40,9 +40,21 @@ def ensure_stage4_schema(engine: Engine) -> None:
     add_column("naumen_connection_settings", "last_check_http_status", "INTEGER")
     add_column("naumen_connection_settings", "last_check_endpoint", "VARCHAR(512)")
     add_column("naumen_projects", "partner_id", "INTEGER")
+    add_column("naumen_projects", "naumen_customer_uuid", "VARCHAR(80)")
+    add_column("naumen_projects", "naumen_project_uuid", "VARCHAR(80)")
+    add_column("naumen_projects", "manual_stats_enabled", "BOOLEAN NOT NULL DEFAULT TRUE")
     add_column("user_preferences", "selected_partner_id", "INTEGER")
     add_column("naumen_sync_runs", "project_id", "INTEGER")
+    add_column("naumen_sync_runs", "partner_uuid", "VARCHAR(80)")
+    add_column("naumen_sync_runs", "period_begin", "TIMESTAMP")
+    add_column("naumen_sync_runs", "period_end", "TIMESTAMP")
+    add_column("naumen_sync_runs", "rows_by_type", "TEXT")
     add_column("external_mappings", "project_id", "INTEGER")
+    add_column("queues", "queue_uuid", "VARCHAR(80)")
+    add_column("queues", "source_system", "VARCHAR(40) NOT NULL DEFAULT 'manual'")
+    add_column("workload_intervals", "source_system", "VARCHAR(40) NOT NULL DEFAULT 'manual'")
+    add_column("workload_intervals", "import_run_id", "INTEGER")
+    add_column("naumen_operators", "metrics_data", "TEXT")
     for table in (
         "employees",
         "teams",
@@ -145,6 +157,140 @@ def ensure_stage4_schema(engine: Engine) -> None:
             )
         """))
         connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ncc_operator_interval_stats (
+                id SERIAL PRIMARY KEY,
+                project_id INTEGER REFERENCES naumen_projects(id),
+                partner_uuid VARCHAR(80),
+                interval_start TIMESTAMP NOT NULL,
+                queue_uuid VARCHAR(80),
+                queue_name VARCHAR(255),
+                operator_login VARCHAR(160),
+                handled INTEGER NOT NULL DEFAULT 0,
+                aht_sec DOUBLE PRECISION,
+                talk_sec_total DOUBLE PRECISION,
+                import_run_id INTEGER,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ncc_queues (
+                id SERIAL PRIMARY KEY,
+                contour_id INTEGER REFERENCES naumen_projects(id),
+                partner_uuid VARCHAR(80),
+                queue_uuid VARCHAR(80) NOT NULL,
+                queue_name VARCHAR(255),
+                data_channel VARCHAR(80),
+                target_sl DOUBLE PRECISION,
+                answer_sec INTEGER,
+                state VARCHAR(80),
+                imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (contour_id, queue_uuid)
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ncc_load_intervals (
+                id SERIAL PRIMARY KEY,
+                contour_id INTEGER REFERENCES naumen_projects(id),
+                partner_uuid VARCHAR(80),
+                interval_start TIMESTAMP NOT NULL,
+                queue_uuid VARCHAR(80),
+                queue_name VARCHAR(255),
+                offered INTEGER NOT NULL DEFAULT 0,
+                handled INTEGER NOT NULL DEFAULT 0,
+                lost INTEGER NOT NULL DEFAULT 0,
+                lost_rate DOUBLE PRECISION,
+                aht_sec DOUBLE PRECISION,
+                sl_percent DOUBLE PRECISION,
+                import_run_id INTEGER,
+                UNIQUE (contour_id, interval_start, queue_uuid)
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ncc_operator_workload (
+                id SERIAL PRIMARY KEY,
+                contour_id INTEGER REFERENCES naumen_projects(id),
+                partner_uuid VARCHAR(80),
+                interval_start TIMESTAMP NOT NULL,
+                queue_uuid VARCHAR(80),
+                queue_name VARCHAR(255),
+                operator_login VARCHAR(160),
+                handled INTEGER NOT NULL DEFAULT 0,
+                aht_sec DOUBLE PRECISION,
+                talk_sec_total DOUBLE PRECISION,
+                import_run_id INTEGER
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ncc_employees (
+                id SERIAL PRIMARY KEY,
+                contour_id INTEGER REFERENCES naumen_projects(id),
+                partner_uuid VARCHAR(80),
+                employee_uuid VARCHAR(80),
+                login VARCHAR(160),
+                employee_title VARCHAR(255),
+                operator_name VARCHAR(255),
+                ou_title VARCHAR(255),
+                post VARCHAR(255),
+                department VARCHAR(255),
+                queues_count INTEGER,
+                queues TEXT,
+                handled_calls_count INTEGER NOT NULL DEFAULT 0,
+                avg_answer_sec DOUBLE PRECISION,
+                avg_talk_sec DOUBLE PRECISION,
+                total_talk_sec DOUBLE PRECISION,
+                sl_percent DOUBLE PRECISION,
+                skills TEXT,
+                statuses_seen TEXT,
+                first_handled_at TIMESTAMP,
+                last_handled_at TIMESTAMP,
+                import_run_id INTEGER,
+                UNIQUE (contour_id, employee_uuid, login)
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ncc_forecast_profile (
+                id SERIAL PRIMARY KEY,
+                contour_id INTEGER REFERENCES naumen_projects(id),
+                partner_uuid VARCHAR(80),
+                weekday_num INTEGER NOT NULL,
+                weekday_name VARCHAR(40) NOT NULL,
+                hour_num INTEGER NOT NULL,
+                queue_uuid VARCHAR(80),
+                queue_name VARCHAR(255),
+                avg_offered DOUBLE PRECISION,
+                avg_handled DOUBLE PRECISION,
+                avg_lost DOUBLE PRECISION,
+                avg_aht_sec DOUBLE PRECISION,
+                avg_sl_percent DOUBLE PRECISION,
+                import_run_id INTEGER,
+                UNIQUE (contour_id, weekday_num, hour_num, queue_uuid)
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ncc_forecast_profiles (
+                id SERIAL PRIMARY KEY,
+                project_id INTEGER REFERENCES naumen_projects(id),
+                partner_uuid VARCHAR(80),
+                weekday_num INTEGER NOT NULL,
+                weekday_name VARCHAR(40) NOT NULL,
+                hour_num INTEGER NOT NULL,
+                queue_uuid VARCHAR(80),
+                queue_name VARCHAR(255),
+                avg_offered DOUBLE PRECISION,
+                avg_handled DOUBLE PRECISION,
+                avg_lost DOUBLE PRECISION,
+                avg_aht_sec DOUBLE PRECISION,
+                avg_sl_percent DOUBLE PRECISION,
+                import_run_id INTEGER,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        connection.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_active_employees_inn
+            ON employees (inn)
+            WHERE inn IS NOT NULL AND inn <> '' AND is_active = TRUE AND employment_status <> 'archived'
+        """))
+        connection.execute(text("""
             CREATE TABLE IF NOT EXISTS naumen_sync_runs (
                 id SERIAL PRIMARY KEY,
                 sync_type VARCHAR(80) NOT NULL,
@@ -159,6 +305,20 @@ def ensure_stage4_schema(engine: Engine) -> None:
                 error_message TEXT
             )
         """))
+        for statement in [
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS partner_uuid VARCHAR(80)",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS period_begin TIMESTAMP",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS period_end TIMESTAMP",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_by_type TEXT",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_customers INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_projects INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_queues INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_load INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_employees INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_operator_workload INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE naumen_sync_runs ADD COLUMN IF NOT EXISTS rows_forecast_profile INTEGER NOT NULL DEFAULT 0",
+        ]:
+            connection.execute(text(statement))
         connection.execute(text("""
             CREATE TABLE IF NOT EXISTS naumen_sync_errors (
                 id SERIAL PRIMARY KEY,

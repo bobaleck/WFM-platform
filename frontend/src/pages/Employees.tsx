@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Alert } from "../components/Alert";
 import { ActionToolbar } from "../components/ActionToolbar";
+import { AsyncButton } from "../components/AsyncButton";
 import { SectionCard } from "../components/SectionCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { apiDelete, apiPost, apiPut } from "../api/client";
@@ -88,6 +89,7 @@ export function Employees() {
   const [viewMode, setViewMode] = useState<"active" | "archive">("active");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   async function load(mode = viewMode) {
@@ -149,6 +151,7 @@ export function Employees() {
   async function saveEmployee() {
     setError(null);
     setMessage(null);
+    setPendingAction("save");
     try {
       const { skill_ids, team_id, ...rest } = form;
       const payload = { ...rest, personnel_number: null, team_id: team_id ? Number(team_id) : null, source_type: "manual" };
@@ -169,24 +172,30 @@ export function Employees() {
       await load();
     } catch {
       setError("Не удалось сохранить сотрудника. Проверьте ФИО, ИНН и отсутствие дубля.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
   async function upload(file: File) {
     setError(null);
     setMessage(null);
+    setPendingAction("import");
     try {
       const result = await uploadEmployeeRegistry(file);
       setMessage(`Импорт завершён: создано ${result.rows_created || 0}, обновлено ${result.rows_updated || 0}, ошибок ${result.rows_failed || 0}.`);
       await load();
     } catch {
       setError("Не удалось загрузить реестр сотрудников.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
   async function checkOne(row: AnyRecord) {
     setError(null);
     setMessage(null);
+    setPendingAction(`onec-${row.id}`);
     try {
       const result = await checkEmployeeOneC(Number(row.id));
       const employee = result.employee as AnyRecord | undefined;
@@ -194,6 +203,8 @@ export function Employees() {
       await load();
     } catch {
       setError("Сверка с 1С не выполнена. Проверьте ИНН и настройки 1С.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -201,60 +212,75 @@ export function Employees() {
     if (!window.confirm("Будет выполнена сверка всех сотрудников с заполненным ИНН. Продолжить?")) return;
     setError(null);
     setMessage(null);
+    setPendingAction("onec-all");
     try {
       const result = await checkAllEmployeesOneC(true);
       setMessage(`Массовая сверка: проверено ${result.employees_checked || 0}, ошибок ${result.employees_failed || 0}.`);
       await load();
     } catch {
       setError("Массовая сверка не запущена. Проверьте настройки 1С.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
   async function checkNaumen(row: AnyRecord) {
     setError(null);
     setMessage(null);
+    setPendingAction(`naumen-${row.id}`);
     try {
       const result = await checkEmployeeNaumen(Number(row.id));
       setMessage(`Результат Naumen: ${result.message || naumenLabels[String(result.status)] || "сверка выполнена"}`);
       await load();
     } catch {
-      setError("Сверка с Naumen не выполнена. Проверьте ФИО, проект Naumen и загрузку операторов проекта.");
+      setError("Сверка с Naumen не выполнена. Проверьте ФИО и UUID Naumen/NCC активного контура.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
   async function checkNaumenUuid(row: AnyRecord) {
     setError(null);
     setMessage(null);
+    setPendingAction(`naumen-uuid-${row.id}`);
     try {
       const result = await checkEmployeeNaumenUuid(Number(row.id));
       setMessage(`Проверка UUID Naumen: ${result.message || naumenLabels[String(result.status)] || "проверка выполнена"}`);
       await load();
     } catch {
       setError("Проверка UUID Naumen не выполнена.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
   async function checkAllNaumen() {
     setError(null);
     setMessage(null);
+    setPendingAction("naumen-all");
     try {
       const result = await checkAllEmployeesNaumen();
-      setMessage(`Naumen: проверено ${result.checked || 0}, сопоставлено ${result.linked || 0}, ошибок ${result.failed || 0}.`);
+      setMessage(`Naumen: проверено ${result.checked || 0}, сопоставлено ${result.linked || 0}, конфликтов ${result.mismatch || 0}, ошибок ${result.failed || 0}.`);
       await load();
     } catch {
-      setError("Массовая сверка с Naumen не выполнена.");
+      setError("Массовая сверка с Naumen/NCC не выполнена. Проверьте UUID Naumen/NCC активного контура и env backend.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
   async function employeeAction(row: AnyRecord, action: "dismiss" | "restore" | "archive") {
     setError(null);
     setMessage(null);
+    setPendingAction(`${action}-${row.id}`);
     try {
       await apiPost(`${endpoints.employees}/${row.id}/${action}`, {});
       setMessage(action === "dismiss" ? "Сотрудник уволен в WFM." : action === "restore" ? "Сотрудник восстановлен." : "Сотрудник перенесён в архив.");
       await load();
     } catch {
       setError("Действие по сотруднику не выполнено.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -262,12 +288,15 @@ export function Employees() {
     if (!window.confirm("Окончательно удалить сотрудника только из WFM? 1С и Naumen не изменяются.")) return;
     setError(null);
     setMessage(null);
+    setPendingAction(`delete-${row.id}`);
     try {
       await apiDelete(`${endpoints.employees}/${row.id}/hard-delete`);
       setMessage("Сотрудник окончательно удалён из WFM.");
       await load("archive");
     } catch {
       setError("Окончательное удаление недоступно: у сотрудника есть связанные графики или история. Оставьте запись в архиве.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -286,7 +315,7 @@ export function Employees() {
         {error ? <Alert type="error">{error}</Alert> : null}
         <ActionToolbar>
           <button className="secondary" type="button" onClick={closeEditor}>← Назад</button>
-          <button type="button" onClick={saveEmployee}>Сохранить</button>
+          <AsyncButton type="button" onClick={saveEmployee} loading={pendingAction === "save"} loadingText="Сохраняем...">Сохранить</AsyncButton>
           <button className="secondary" type="button" onClick={closeEditor}>Отмена</button>
         </ActionToolbar>
         <div className="form-grid separated">
@@ -317,8 +346,8 @@ export function Employees() {
         <button type="button" onClick={openCreate}>Создать сотрудника</button>
         <button className="secondary" type="button" onClick={() => downloadEmployeeTemplate().catch(() => setError("Не удалось скачать шаблон."))}>Шаблон</button>
         <button className="secondary" type="button" onClick={() => fileInput.current?.click()}>Загрузить реестр</button>
-        <button className="secondary" type="button" onClick={checkAll}>Сверить всех с 1С</button>
-        <button className="secondary" type="button" onClick={checkAllNaumen}>Сверить всех с Naumen</button>
+        <AsyncButton className="secondary" type="button" onClick={checkAll} loading={pendingAction === "onec-all"} loadingText="Сверяем с 1С...">Сверить всех с 1С</AsyncButton>
+        <AsyncButton className="secondary" type="button" onClick={checkAllNaumen} loading={pendingAction === "naumen-all"} loadingText="Сверяем с Naumen...">Сверить всех с Naumen</AsyncButton>
       </ActionToolbar>
       <div className="action-toolbar subtle-tabs">
         <button className={viewMode === "active" ? "" : "secondary"} type="button" onClick={() => setViewMode("active")}>Активные</button>
@@ -348,8 +377,8 @@ export function Employees() {
                       {menuId === Number(row.id) ? (
                         <div className="row-action-menu">
                           <button type="button" onClick={() => openEdit(row)}>Редактировать</button>
-                          <button type="button" onClick={() => checkOne(row)}>Сверить с 1С</button>
-                          <button type="button" onClick={() => checkNaumen(row)}>Сверить с Naumen</button>
+                          <AsyncButton type="button" onClick={() => checkOne(row)} loading={pendingAction === `onec-${row.id}`} loadingText="Сверяем...">Сверить с 1С</AsyncButton>
+                          <AsyncButton type="button" onClick={() => checkNaumen(row)} loading={pendingAction === `naumen-${row.id}`} loadingText="Сверяем...">Сверить с Naumen</AsyncButton>
                           {viewMode === "archive" ? <button type="button" onClick={() => employeeAction(row, "restore")}>Восстановить</button> : row.employment_status === "dismissed" ? <button type="button" onClick={() => employeeAction(row, "restore")}>Вернуть в работу</button> : <button type="button" onClick={() => employeeAction(row, "dismiss")}>Уволить в WFM</button>}
                           {viewMode === "archive" ? <button type="button" onClick={() => hardDelete(row)}>Удалить из WFM</button> : <button type="button" onClick={() => employeeAction(row, "archive")}>Архивировать</button>}
                         </div>
@@ -363,8 +392,8 @@ export function Employees() {
                           <div><h3>Основное</h3><p>{String(row.full_name || "")}</p><p>{String(row.email || "Email не указан")} · {String(row.phone || "Телефон не указан")}</p><p>{String(row.position || "Должность не указана")}</p><p>Статус WFM: {wfmLabel(row)}</p></div>
                           <div><h3>Проекты и команда</h3><p>{Array.isArray(row.project_names) ? row.project_names.join(", ") : namesByIds(row.project_ids, contours)}</p><p>{String(row.team_name || "Команда не назначена")}</p></div>
                           <div><h3>Навыки</h3><div className="tag-list">{Array.isArray(row.skill_ids) && row.skill_ids.length ? row.skill_ids.map((id) => <span className="tag" key={String(id)}>{namesByIds([id], skills.map((skill) => ({ id: Number(skill.id), name: String(skill.name) })))}</span>) : <span className="muted-text">Навыки не назначены</span>}</div><button className="secondary" type="button" onClick={() => openEdit(row)}>Изменить навыки</button></div>
-                          <div><h3>1С</h3><p>Статус 1С: {oneCLabel(row)}</p><p>Последняя сверка: {String(row.onec_last_checked_at || "не выполнялась")}</p><p>{String(row.onec_last_check_message || "Сообщений нет")}</p><button className="secondary" type="button" onClick={() => checkOne(row)}>Сверить с 1С</button></div>
-                          <div><h3>Naumen</h3><p>UUID: {String(row.naumen_uuid || "не указан")}</p><p>Статус: {naumenLabel(row)}</p><p>{String(row.naumen_last_check_message || "Сообщений нет")}</p><ActionToolbar><button className="secondary" type="button" onClick={() => checkNaumen(row)}>Сверить по ФИО</button><button className="secondary" type="button" onClick={() => checkNaumenUuid(row)}>Проверить UUID</button></ActionToolbar></div>
+                          <div><h3>1С</h3><p>Статус 1С: {oneCLabel(row)}</p><p>Последняя сверка: {String(row.onec_last_checked_at || "не выполнялась")}</p><p>{String(row.onec_last_check_message || "Сообщений нет")}</p><AsyncButton className="secondary" type="button" onClick={() => checkOne(row)} loading={pendingAction === `onec-${row.id}`} loadingText="Сверяем...">Сверить с 1С</AsyncButton></div>
+                          <div><h3>Naumen</h3><p>UUID: {String(row.naumen_uuid || "не указан")}</p><p>Статус: {naumenLabel(row)}</p><p>{String(row.naumen_last_check_message || "Сообщений нет")}</p><ActionToolbar><AsyncButton className="secondary" type="button" onClick={() => checkNaumen(row)} loading={pendingAction === `naumen-${row.id}`} loadingText="Сверяем...">Сверить по ФИО</AsyncButton><AsyncButton className="secondary" type="button" onClick={() => checkNaumenUuid(row)} loading={pendingAction === `naumen-uuid-${row.id}`} loadingText="Проверяем...">Проверить UUID</AsyncButton></ActionToolbar></div>
                           <div><h3>Статистика</h3><p>Статистика пока не загружена.</p></div>
                           <div><h3>Действия</h3><ActionToolbar><button type="button" onClick={() => openEdit(row)}>Редактировать</button>{viewMode === "archive" ? <button className="secondary" type="button" onClick={() => employeeAction(row, "restore")}>Восстановить</button> : <button className="secondary" type="button" onClick={() => employeeAction(row, "archive")}>Архивировать</button>}</ActionToolbar></div>
                         </div>

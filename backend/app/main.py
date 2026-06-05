@@ -6,6 +6,8 @@ from app.api.integration import router as integration_router
 from app.api.auth import router as auth_router
 from app.api.admin import router as admin_router
 from app.api.wfm import router as wfm_router
+from app.api.v1.naumen import contours_router as ncc_contours_router
+from app.api.v1.naumen import router as ncc_router
 from app.core.config import settings
 from app.core.rbac import rbac_middleware
 from app.db.seed import ensure_auth_defaults, seed_demo_data
@@ -52,6 +54,8 @@ app.include_router(integration_router)
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(wfm_router)
+app.include_router(ncc_router)
+app.include_router(ncc_contours_router)
 
 
 @app.get("/health")

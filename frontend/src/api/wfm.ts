@@ -35,6 +35,11 @@ export type Contour = {
   description: string | null;
   is_active: boolean;
   is_default: boolean;
+  naumen_partner_uuid?: string | null;
+  naumen_customer_uuid?: string | null;
+  naumen_project_uuid?: string | null;
+  manual_stats_enabled?: boolean;
+  naumen_stats_available?: boolean;
 };
 
 export type WorkContext = {
@@ -149,6 +154,50 @@ export function matchNaumenOperators(): Promise<AnyRecord> {
 
 export function checkAllEmployeesNaumen(): Promise<AnyRecord> {
   return apiPost<AnyRecord>("/api/v1/employees/naumen/check-all", {});
+}
+
+export function getNaumenNccStatus(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/status");
+}
+
+export function getNaumenNccCustomers(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/customers");
+}
+
+export function getNaumenNccProjects(partnerUuid: string): Promise<AnyRecord> {
+  return apiGet<AnyRecord>(`/api/v1/naumen/customers/${encodeURIComponent(partnerUuid)}/projects`);
+}
+
+export function getNaumenNccQueues(partnerUuid: string): Promise<AnyRecord> {
+  return apiGet<AnyRecord>(`/api/v1/naumen/customers/${encodeURIComponent(partnerUuid)}/queues`);
+}
+
+export function syncContourNaumen(contourId: number, begin: string, end: string): Promise<AnyRecord> {
+  return apiPost<AnyRecord>(`/api/v1/contours/${contourId}/naumen/sync?begin=${encodeURIComponent(begin)}&end=${encodeURIComponent(end)}`, {});
+}
+
+export function getLocalNccStatus(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/local/status");
+}
+
+export function getLocalNccQueues(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/local/queues");
+}
+
+export function getLocalNccLoad(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/local/load");
+}
+
+export function getLocalNccOperators(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/local/operators");
+}
+
+export function getLocalNccOperatorWorkload(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/local/operator-workload");
+}
+
+export function getLocalNccForecastProfile(): Promise<AnyRecord> {
+  return apiGet<AnyRecord>("/api/v1/naumen/local/forecast-profile");
 }
 
 export function syncNaumenOperators(): Promise<AnyRecord> {

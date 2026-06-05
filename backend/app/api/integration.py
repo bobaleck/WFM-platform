@@ -581,12 +581,18 @@ def sync_run_detail(run_id: int, db: Session = Depends(get_db)) -> NaumenSyncRun
 
 
 def contour_payload(project: NaumenProject) -> dict:
+    customer_uuid = project.naumen_customer_uuid or project.partner_uuid
     return {
         "id": project.id,
         "name": project.title,
         "description": project.state,
         "is_active": project.is_active,
         "is_default": project.is_default,
+        "naumen_partner_uuid": customer_uuid,
+        "naumen_customer_uuid": customer_uuid,
+        "naumen_project_uuid": project.naumen_project_uuid,
+        "manual_stats_enabled": project.manual_stats_enabled,
+        "naumen_stats_available": bool(customer_uuid),
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
@@ -608,6 +614,10 @@ def create_contour(payload: dict, request: Request, db: Session = Depends(get_db
         project_uuid=uuid4().hex,
         title=name,
         state=str(payload.get("description") or "") or None,
+        partner_uuid=str(payload.get("naumen_partner_uuid") or payload.get("naumen_customer_uuid") or "").strip() or None,
+        naumen_customer_uuid=str(payload.get("naumen_customer_uuid") or payload.get("naumen_partner_uuid") or "").strip() or None,
+        naumen_project_uuid=str(payload.get("naumen_project_uuid") or "").strip() or None,
+        manual_stats_enabled=bool(payload.get("manual_stats_enabled", not bool(payload.get("naumen_partner_uuid") or payload.get("naumen_customer_uuid")))),
         is_active=bool(payload.get("is_active", True)),
         is_default=bool(payload.get("is_default", False)),
         data_channel="manual",
@@ -642,6 +652,14 @@ def update_contour(contour_id: int, payload: dict, request: Request, db: Session
         item.state = str(payload.get("description") or "") or None
     if "is_active" in payload:
         item.is_active = bool(payload["is_active"])
+    if "naumen_partner_uuid" in payload or "naumen_customer_uuid" in payload:
+        customer_uuid = str(payload.get("naumen_customer_uuid") or payload.get("naumen_partner_uuid") or "").strip() or None
+        item.partner_uuid = customer_uuid
+        item.naumen_customer_uuid = customer_uuid
+    if "naumen_project_uuid" in payload:
+        item.naumen_project_uuid = str(payload.get("naumen_project_uuid") or "").strip() or None
+    if "manual_stats_enabled" in payload:
+        item.manual_stats_enabled = bool(payload["manual_stats_enabled"])
     if payload.get("is_default"):
         db.query(NaumenProject).update({"is_default": False})
         item.is_default = True

@@ -160,3 +160,26 @@ docker compose exec -T backend pytest
 # Обновление этапа 9.8
 
 Перед изменениями БД создан backup `/opt/wfm-naumen/backups/db/wfm_naumen_20260602T121406Z.sql`. После backend tests реальные настройки 1С восстановлены из backup, чтобы mock Gateway тестов не остался в рабочей базе. Сервер 1С и Windows Gateway не менялись.
+# Naumen/NCC read-only PostgreSQL
+
+Для включения автоматической статистики Naumen/NCC заполнить env backend:
+
+```env
+NCC_DB_HOST=
+NCC_DB_NAME=
+NCC_DB_USER=
+NCC_DB_PASSWORD=
+NCC_DB_PORT=5432
+NCC_DB_TIMEOUT_SECONDS=15
+NCC_DB_MAX_PERIOD_DAYS=31
+```
+
+Секреты не добавлять в код, документацию или frontend. Пользователь NCC должен быть read-only. Проверка статуса доступна в UI “Настройки / Naumen/NCC” и через `GET /api/v1/naumen/status`.
+
+Синхронизация активного контура выполняется backend endpoint:
+
+```text
+POST /api/v1/contours/{contour_id}/naumen/sync?begin=YYYY-MM-DD&end=YYYY-MM-DD
+```
+
+Период ограничивается `NCC_DB_MAX_PERIOD_DAYS`.

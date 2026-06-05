@@ -178,11 +178,13 @@ class Queue(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("naumen_projects.id"), nullable=True)
+    queue_uuid: Mapped[str | None] = mapped_column(String(80), nullable=True)
     name: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
     channel: Mapped[str] = mapped_column(String(64), default="voice", nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     service_level_target: Mapped[float] = mapped_column(Float, default=80.0, nullable=False)
     target_answer_time_sec: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+    source_system: Mapped[str] = mapped_column(String(40), default="manual", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
@@ -201,6 +203,8 @@ class WorkloadInterval(Base):
     abandoned_contacts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     average_handle_time_sec: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     service_level_percent: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    source_system: Mapped[str] = mapped_column(String(40), default="manual", nullable=False)
+    import_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
@@ -484,6 +488,7 @@ class NaumenOperator(Base):
     substate: Mapped[str | None] = mapped_column(String(80), nullable=True)
     skills: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_data: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metrics_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)

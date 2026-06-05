@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { calculateStaffing, endpoints, getList, type AnyRecord } from "../api/wfm";
+import { AsyncButton } from "../components/AsyncButton";
 import { DataTable } from "../components/DataTable";
 import { KpiCard } from "../components/KpiCard";
 
@@ -10,6 +11,7 @@ export function Staffing() {
   const [dateTo, setDateTo] = useState("2026-01-21");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [calculating, setCalculating] = useState(false);
 
   const loadRows = () => getList(endpoints.staffing).then(setRows).catch(() => setError("Не удалось загрузить потребность"));
 
@@ -27,12 +29,15 @@ export function Staffing() {
   const runCalculation = async () => {
     setError("");
     setMessage("");
+    setCalculating(true);
     try {
       const result = await calculateStaffing(dateFrom, dateTo);
       setMessage(`Рассчитано интервалов: ${result.calculated_intervals}`);
       await loadRows();
     } catch {
       setError("Расчёт потребности не выполнен");
+    } finally {
+      setCalculating(false);
     }
   };
 
@@ -49,7 +54,7 @@ export function Staffing() {
         <div className="form-row">
           <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
           <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
-          <button type="button" onClick={runCalculation}>Рассчитать потребность</button>
+          <AsyncButton type="button" onClick={runCalculation} loading={calculating} loadingText="Рассчитываем...">Рассчитать потребность</AsyncButton>
         </div>
         {rows.length === 0 ? <p className="muted-text">Сначала загрузите нагрузку, затем рассчитайте потребность. Если нагрузки нет за выбранный период, расчёт вернёт 0 интервалов.</p> : null}
         {settings ? (

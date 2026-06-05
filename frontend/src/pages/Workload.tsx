@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { downloadWorkloadTemplate, endpoints, getList, uploadWorkloadCsvNew, uploadWorkloadXlsx, type AnyRecord } from "../api/wfm";
+import { downloadWorkloadTemplate, endpoints, getCurrentContour, getList, getLocalNccLoad, syncContourNaumen, uploadWorkloadCsvNew, uploadWorkloadXlsx, type AnyRecord } from "../api/wfm";
+import { AsyncButton } from "../components/AsyncButton";
 import { DataTable } from "../components/DataTable";
+import { KpiCard } from "../components/KpiCard";
 
 export function Workload() {
   const [rows, setRows] = useState<AnyRecord[]>([]);
@@ -9,8 +11,18 @@ export function Workload() {
   const [importResult, setImportResult] = useState<AnyRecord | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [syncingNaumen, setSyncingNaumen] = useState(false);
+  const [totals, setTotals] = useState<AnyRecord>({});
 
-  const loadRows = () => getList(endpoints.workload).then(setRows).catch(() => setError("Не удалось загрузить нагрузку"));
+  const loadRows = async () => {
+    const local = await getLocalNccLoad().catch(() => null);
+    if (local && Array.isArray(local.items)) {
+      setRows(local.items as AnyRecord[]);
+      setTotals((local.totals || {}) as AnyRecord);
+      return;
+    }
+    await getList(endpoints.workload).then(setRows).catch(() => setError("Не удалось загрузить нагрузку"));
+  };
 
   useEffect(() => {
     loadRows();
@@ -35,6 +47,27 @@ export function Workload() {
     }
   };
 
+  const syncFromNaumen = async () => {
+    setSyncingNaumen(true);
+    setError("");
+    try {
+      const current = await getCurrentContour();
+      if (!current) throw new Error("Контур не выбран");
+      const end = new Date();
+      end.setDate(end.getDate() + 1);
+      const begin = new Date(end);
+      begin.setDate(begin.getDate() - 7);
+      const result = await syncContourNaumen(current.id, begin.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
+      const rowsByType = (result.rows_by_type || {}) as Record<string, number>;
+      setImportResult({ status: result.status, rows_total: rowsByType.load ?? 0, rows_success: rowsByType.load ?? 0, rows_failed: 0 });
+      await loadRows();
+    } catch {
+      setError("Автоматическая загрузка из Naumen/NCC не выполнена. Проверьте UUID Naumen/NCC активного контура и env backend.");
+    } finally {
+      setSyncingNaumen(false);
+    }
+  };
+
   return (
     <>
       <section className="panel">
@@ -51,9 +84,9 @@ export function Workload() {
           <button type="button" onClick={() => submitImport("xlsx")} disabled={loading}>{loading ? "Загрузка..." : "Загрузить реестр"}</button>
           <input type="file" accept=".csv,text/csv" onChange={(event) => setCsvFile(event.target.files?.[0] ?? null)} />
           <button type="button" className="secondary" onClick={() => submitImport("csv")} disabled={loading}>{loading ? "Загрузка..." : "Загрузить файл"}</button>
-          <button type="button" className="secondary" disabled title="Endpoint интервальной статистики Naumen не подтверждён документацией. Используйте ручную загрузку.">Загрузить из Naumen</button>
+          <AsyncButton type="button" className="secondary" onClick={syncFromNaumen} loading={syncingNaumen} loadingText="Загружаем из Naumen...">Загрузить из Naumen/NCC</AsyncButton>
         </div>
-        <p className="muted-text">Автоматическая загрузка нагрузки из Naumen пока не настроена: endpoint не подтверждён документацией. Используйте ручную загрузку XLSX/CSV.</p>
+        <p className="muted-text">Если UUID Naumen/NCC или env backend не заполнены, используйте ручную загрузку XLSX/CSV.</p>
         {error ? <p className="error-text">{error}</p> : null}
         {importResult ? (
           <div className="result-strip">
@@ -64,16 +97,25 @@ export function Workload() {
           </div>
         ) : null}
       </section>
+      <section className="kpi-grid compact">
+        <KpiCard label="Поступило" value={String(totals.offered ?? 0)} />
+        <KpiCard label="Обработано" value={String(totals.handled ?? 0)} />
+        <KpiCard label="Потеряно" value={String(totals.lost ?? 0)} />
+        <KpiCard label="Lost rate" value={`${String(totals.lost_rate ?? 0)}%`} />
+        <KpiCard label="Средний АНТ" value={`${String(totals.aht_sec ?? 0)} сек`} />
+        <KpiCard label="Средний SL" value={`${String(totals.sl_percent ?? 0)}%`} />
+      </section>
       <section className="panel">
         <DataTable columns={[
           { key: "interval_start", label: "Начало", render: (row) => String(row.interval_start).replace("T", " ").slice(0, 16) },
           { key: "queue_name", label: "Очередь" },
-          { key: "offered_contacts", label: "Поступило" },
-          { key: "handled_contacts", label: "Обработано" },
-          { key: "abandoned_contacts", label: "Потеряно" },
-          { key: "average_handle_time_sec", label: "AHT" },
-          { key: "service_level_percent", label: "SL", render: (row) => `${row.service_level_percent}%` }
-        ]} rows={rows} emptyText="Загрузите интервальную нагрузку через XLSX или CSV." />
+          { key: "offered", label: "Поступило", render: (row) => String(row.offered ?? row.offered_contacts ?? 0) },
+          { key: "handled", label: "Обработано", render: (row) => String(row.handled ?? row.handled_contacts ?? 0) },
+          { key: "lost", label: "Потеряно", render: (row) => String(row.lost ?? row.abandoned_contacts ?? 0) },
+          { key: "lost_rate", label: "Lost rate", render: (row) => `${String(row.lost_rate ?? 0)}%` },
+          { key: "aht_sec", label: "АНТ", render: (row) => String(row.aht_sec ?? row.average_handle_time_sec ?? 0) },
+          { key: "sl_percent", label: "SL", render: (row) => `${String(row.sl_percent ?? row.service_level_percent ?? 0)}%` }
+        ]} rows={rows} emptyText="Данные Naumen за выбранный период не загружены. Используйте кнопку «Загрузить из Naumen/NCC» или ручной XLSX/CSV." />
       </section>
     </>
   );

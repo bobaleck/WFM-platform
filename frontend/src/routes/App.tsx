@@ -10,6 +10,9 @@ import { Documentation } from "../pages/Documentation";
 import { Employees } from "../pages/Employees";
 import { Integration } from "../pages/Integration";
 import { Login } from "../pages/Login";
+import { ForecastProfile } from "../pages/ForecastProfile";
+import { OperatorWorkload } from "../pages/OperatorWorkload";
+import { OperatorsAnalytics } from "../pages/OperatorsAnalytics";
 import { Queues } from "../pages/Queues";
 import { Reports } from "../pages/Reports";
 import { Schedules } from "../pages/Schedules";
@@ -21,16 +24,19 @@ import { Teams } from "../pages/Teams";
 import { UsersPage } from "../pages/Users";
 import { Workload } from "../pages/Workload";
 
-export type PageKey = "dashboard" | "employees" | "teams" | "skills" | "queues" | "workload" | "staffing" | "shifts" | "schedules" | "absences" | "reports" | "settings" | "users" | "audit" | "integration" | "about" | "documentation";
+export type PageKey = "dashboard" | "employees" | "teams" | "skills" | "queues" | "workload" | "staffing" | "operators" | "operatorWorkload" | "forecastProfile" | "shifts" | "schedules" | "absences" | "reports" | "settings" | "users" | "audit" | "integration" | "about" | "documentation";
 
 const titles: Record<PageKey, string> = {
-  dashboard: "Дашборд",
+  dashboard: "Сводка",
   employees: "Сотрудники",
   teams: "Команды",
   skills: "Навыки",
   queues: "Очереди",
   workload: "Нагрузка",
   staffing: "Потребность",
+  operators: "Операторы",
+  operatorWorkload: "Операторская нагрузка",
+  forecastProfile: "Профиль нагрузки",
   shifts: "Смены",
   schedules: "Графики",
   absences: "Отсутствия",
@@ -75,6 +81,9 @@ export function App() {
       queues: <Queues />,
       workload: <Workload />,
       staffing: <Staffing />,
+      operators: <OperatorsAnalytics />,
+      operatorWorkload: <OperatorWorkload />,
+      forecastProfile: <ForecastProfile />,
       shifts: <Shifts />,
       schedules: <Schedules />,
       absences: <Absences />,

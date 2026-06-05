@@ -41,6 +41,22 @@ button.danger {
   background: var(--color-danger);
 }
 
+.button-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 999px;
+  margin-right: 7px;
+  animation: button-spin 700ms linear infinite;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -128,6 +144,54 @@ button.danger {
   text-align: left;
   font-size: 14px;
   font-weight: 500;
+}
+
+.nav-group {
+  margin-bottom: 4px;
+}
+
+.nav-group-toggle {
+  width: 100%;
+  min-height: 34px;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.nav-group-toggle:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.nav-group.is-active .nav-group-toggle {
+  color: var(--color-text);
+}
+
+.nav-chevron {
+  margin-left: auto;
+  transition: transform 200ms ease;
+}
+
+.nav-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.nav-group-items {
+  display: grid;
+  gap: 2px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding-left: 8px;
+  transition: max-height 220ms ease, opacity 180ms ease;
+}
+
+.nav-group-items.is-open {
+  max-height: 420px;
+  opacity: 1;
 }
 
 .nav-item svg {
@@ -394,8 +458,14 @@ button.danger {
 .form-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
+}
+
+.action-toolbar > *,
+.form-row > *,
+.actions > * {
+  flex: 0 0 auto;
 }
 
 .form-row {
@@ -472,7 +542,7 @@ button.danger {
 
 .data-table th {
   color: var(--color-text-muted);
-  background: #f9fafb;
+  background: var(--color-surface-muted);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -482,7 +552,7 @@ button.danger {
 }
 
 .data-table tr:hover td {
-  background: #f9fafb;
+  background: var(--color-surface-muted);
 }
 
 .data-table tr:last-child td {
@@ -652,7 +722,7 @@ button.danger {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 10px;
-  background: #fbfdff;
+  background: var(--color-surface);
 }
 
 .info-grid span {
@@ -711,10 +781,53 @@ button.danger {
 .empty-state {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  padding: 12px;
-  color: var(--color-text-muted);
-  background: #f9fafb;
+  padding: 16px;
+  color: var(--color-text);
+  background: var(--color-surface-muted);
   font-size: 13px;
+}
+
+.empty-state h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: var(--color-text);
+}
+
+.empty-state p {
+  margin: 0 0 12px;
+  color: var(--color-text-muted);
+}
+
+.contour-cell {
+  min-width: min(760px, 72vw);
+}
+
+.collapsible-panel {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 220ms ease, opacity 180ms ease;
+}
+
+.collapsible-panel.is-open {
+  max-height: 520px;
+  opacity: 1;
+  margin-bottom: 10px;
+}
+
+.compact-form {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  margin-bottom: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collapsible-panel,
+  .nav-group-items,
+  .nav-chevron,
+  .button-spinner {
+    transition: none;
+    animation: none;
+  }
 }
 
 .integration-layout {
@@ -729,10 +842,10 @@ button.danger {
 }
 
 .info-panel {
-  border: 1px solid #bfdbfe;
+  border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
-  background: #eff6ff;
-  color: #1e3a8a;
+  background: var(--color-primary-muted);
+  color: var(--color-text);
   padding: 12px;
   font-size: 13px;
   line-height: 1.45;
@@ -935,11 +1048,11 @@ button.danger {
 }
 
 .interactive-table .clickable-row:hover {
-  background: #f8fafc;
+  background: var(--color-surface-muted);
 }
 
 .details-row > td {
-  background: #fbfdff;
+  background: var(--color-surface);
 }
 
 .icon-button {
@@ -949,6 +1062,7 @@ button.danger {
 
 .row-action-menu {
   position: absolute;
+  right: 12px;
   z-index: 20;
   display: grid;
   gap: 4px;
@@ -1029,6 +1143,15 @@ button.danger {
   color: var(--color-text-muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
 }
 
 @media (max-width: 1200px) {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiDelete, apiPost, apiPut } from "../api/client";
-import { endpoints, getList, type AnyRecord } from "../api/wfm";
+import { endpoints, getCurrentContour, getList, getLocalNccQueues, syncContourNaumen, type AnyRecord } from "../api/wfm";
+import { AsyncButton } from "../components/AsyncButton";
 import { DataTable } from "../components/DataTable";
 import { PageHeader } from "../components/PageHeader";
 
@@ -13,10 +14,18 @@ export function Queues() {
   const [minLevel, setMinLevel] = useState("2");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [loadingNaumen, setLoadingNaumen] = useState(false);
   const [editing, setEditing] = useState<AnyRecord | null>(null);
   const [form, setForm] = useState<AnyRecord>({ name: "", channel: "voice", service_level_target: 80, target_answer_time_sec: 20, description: "", is_active: true });
 
-  const loadQueues = () => getList(endpoints.queues).then(setQueues);
+  const loadQueues = async () => {
+    const local = await getLocalNccQueues().catch(() => null);
+    if (local && Array.isArray(local.items)) {
+      setQueues(local.items as AnyRecord[]);
+      return;
+    }
+    await getList(endpoints.queues).then(setQueues);
+  };
   const loadSkills = () => getList(endpoints.skills).then(setSkills);
   const loadQueueSkills = (queueId: unknown) => getList(`/api/v1/queues/${queueId}/skills`).then(setQueueSkills);
 
@@ -91,14 +100,34 @@ export function Queues() {
     }
   };
 
+  const syncFromNaumen = async () => {
+    setError("");
+    setLoadingNaumen(true);
+    try {
+      const current = await getCurrentContour();
+      if (!current) throw new Error("Контур не выбран");
+      const end = new Date();
+      end.setDate(end.getDate() + 1);
+      const begin = new Date(end);
+      begin.setDate(begin.getDate() - 7);
+      await syncContourNaumen(current.id, begin.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
+      setMessage("Очереди и статистика обновлены из Naumen/NCC.");
+      await loadQueues();
+    } catch {
+      setError("Обновление из Naumen/NCC не выполнено. Проверьте UUID Naumen/NCC активного контура и env backend.");
+    } finally {
+      setLoadingNaumen(false);
+    }
+  };
+
   return (
     <>
       <section className="panel">
         <PageHeader title="Очереди" description="Каналы и очереди контактного центра с требованиями по навыкам." />
-        <p className="muted-text">Очереди создаются вручную. Они нужны для загрузки нагрузки и расчёта потребности.</p>
+        <p className="muted-text">Очередь — это направление нагрузки контактного центра. Очереди можно вести вручную или обновлять из Naumen/NCC при настроенном UUID контура.</p>
         {message ? <p className="success-text">{message}</p> : null}
         {error ? <p className="error-text">{error}</p> : null}
-        <div className="form-row"><button type="button" onClick={() => openForm()}>Создать очередь</button></div>
+        <div className="form-row"><button type="button" onClick={() => openForm()}>Создать очередь</button><AsyncButton className="secondary" type="button" onClick={syncFromNaumen} loading={loadingNaumen} loadingText="Обновляем...">Обновить из Naumen/NCC</AsyncButton></div>
         {editing ? (
           <div className="form-grid">
             <div className="form-field"><label>Название</label><input value={String(form.name)} onChange={(event) => setForm({ ...form, name: event.target.value })} /></div>
@@ -110,13 +139,15 @@ export function Queues() {
           </div>
         ) : null}
         <DataTable columns={[
-          { key: "name", label: "Название" },
-          { key: "channel", label: "Канал" },
-          { key: "service_level_target", label: "Целевой SL", render: (row) => `${row.service_level_target}%` },
-          { key: "target_answer_time_sec", label: "Ответ, сек" },
-          { key: "is_active", label: "Статус", render: (row) => row.is_active ? "Активна" : "Отключена" },
+          { key: "queue_uuid", label: "UUID" },
+          { key: "queue_name", label: "Название", render: (row) => String(row.queue_name || row.name || "") },
+          { key: "data_channel", label: "Канал", render: (row) => String(row.data_channel || row.channel || "") },
+          { key: "target_sl", label: "Целевой SL", render: (row) => `${String(row.target_sl ?? row.service_level_target ?? 0)}%` },
+          { key: "answer_sec", label: "Ответ, сек", render: (row) => String(row.answer_sec ?? row.target_answer_time_sec ?? "") },
+          { key: "state", label: "Статус", render: (row) => String(row.state || (row.is_active ? "Активна" : "Отключена")) },
+          { key: "imported_at", label: "Последняя загрузка", render: (row) => String(row.imported_at || "").replace("T", " ").slice(0, 16) },
           { key: "actions", label: "Действия", render: (row) => <div className="actions"><button type="button" onClick={() => selectQueue(row)}>Навыки</button><button type="button" className="secondary" onClick={() => openForm(row)}>Редактировать</button><button type="button" className="secondary" onClick={() => archiveQueue(row)}>Архивировать</button></div> }
-        ]} rows={queues} emptyText="Создайте очереди вручную. Они нужны для загрузки нагрузки и расчёта потребности." />
+        ]} rows={queues} emptyText="Очереди Naumen/NCC не загружены. Нажмите «Обновить из Naumen/NCC» или настройте ручной режим." />
       </section>
       <section className="panel">
         <PageHeader title="Навыки очереди" description={selectedQueue ? `Требования для очереди: ${String(selectedQueue.name)}` : "Выберите очередь в таблице выше."} />
